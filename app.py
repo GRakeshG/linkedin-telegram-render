@@ -1,10 +1,10 @@
 from __future__ import annotations
-import os, time, json, threading, urllib.parse, uuid, shutil, atexit
+import os, time, json, threading, urllib.parse, uuid, shutil, atexit, io
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import List, Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputFile
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 )
@@ -18,14 +18,14 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 # ---------------- CONFIG ----------------
-WAIT_SEC = 45
+WAIT_SEC = 60
 MAX_TXT = 4096
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "PASTE_TOKEN_IN_ENV"
 BASE_URL = "https://www.linkedin.com/"
 OUT_DIR = Path.cwd() / "out"; OUT_DIR.mkdir(exist_ok=True)
 PNG_PATH = OUT_DIR / "job.png"
 
-# 0 = original (type in top search + click Jobs), 1 = open the SAME Jobs page by URL
+# 0 = original (type in top search + click Jobs), 1 = open the SAME Jobs page by URL (recommended)
 USE_DIRECT_JOBS_URL = os.getenv("DIRECT_JOBS_URL", "1") == "1"
 
 # -------------- tiny health server (Render health checks) ---------------
@@ -46,7 +46,7 @@ def start_health_server():
     srv = HTTPServer(("0.0.0.0", port), _Health)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-# -------------- Selenium ---------------
+# -------------- Selenium helpers ---------------
 def make_driver() -> webdriver.Chrome:
     opts = Options()
     opts.add_argument("--headless=new")
@@ -77,16 +77,15 @@ def wait(drv, cond):
 def inject_cookies_if_any(drv) -> bool:
     """
     Reads LINKEDIN_COOKIES_JSON env var (JSON array of cookies).
-    Example item:
-    {"name":"li_at","value":"...","domain":".linkedin.com","path":"/","secure":true,"httpOnly":true}
+    Example:
+    [{"name":"li_at","value":"...","domain":".linkedin.com","path":"/","secure":true,"httpOnly":true}, ...]
     """
     raw = os.getenv("LINKEDIN_COOKIES_JSON", "").strip()
     if not raw:
         return False
     try:
         cookies = json.loads(raw)
-        # must visit domain first
-        drv.get("https://www.linkedin.com")
+        drv.get("https://www.linkedin.com")  # must visit domain before add_cookie
         for c in cookies:
             drv.add_cookie({
                 "name": c["name"],
@@ -100,6 +99,18 @@ def inject_cookies_if_any(drv) -> bool:
     except Exception:
         return False
 
+def dismiss_consent_if_present(drv):
+    """Best-effort: close cookie/consent banners if visible."""
+    try:
+        WebDriverWait(drv, 5).until(
+            EC.element_to_be_clickable(
+                (By.XPATH, "//button[normalize-space()='Accept' or contains(., 'Accept')]")
+            )
+        ).click()
+        time.sleep(0.5)
+    except Exception:
+        pass
+
 def logged_in(drv) -> bool:
     try:
         wait(drv, EC.presence_of_element_located((By.ID, "global-nav")))
@@ -110,9 +121,11 @@ def logged_in(drv) -> bool:
 def login(drv):
     inject_cookies_if_any(drv)  # cookie-based login
     drv.get("https://www.linkedin.com/feed/")
+    dismiss_consent_if_present(drv)
     if not logged_in(drv):
         print("⚠️ Not logged in; results may be limited.")
 
+# ----------- Page navigation -------------
 def perform_search(drv, query: str):
     # original method: type into top search, press Enter
     sel1 = (By.CSS_SELECTOR, 'input[placeholder="Search"][role="combobox"]')
@@ -139,11 +152,13 @@ def go_to_jobs_search(drv, query: str):
     # same end page as the original flow, just more robust for headless
     url = "https://www.linkedin.com/jobs/search/?keywords=" + urllib.parse.quote_plus(query)
     drv.get(url)
+    dismiss_consent_if_present(drv)
     wait(drv, EC.presence_of_all_elements_located((
         By.CSS_SELECTOR,
         'a.job-card-job-posting-card-wrapper__card-link, a.job-card-container__link'
     )))
 
+# ----------- scraping helpers ------------
 def job_links(drv):
     return drv.find_elements(By.CSS_SELECTOR, 'a.job-card-job-posting-card-wrapper__card-link, a.job-card-container__link')
 
@@ -216,8 +231,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["awaiting_query"] = False
     drv = make_driver(); ctx.user_data.update({"drv": drv, "idx": 0})
 
-    # Login, then reach the Jobs results page by the chosen method
     login(drv)
+
     try:
         if USE_DIRECT_JOBS_URL:
             go_to_jobs_search(drv, query)
@@ -226,8 +241,18 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             perform_search(drv, query)
             open_jobs_tab(drv)
     except TimeoutException:
-        drv.save_screenshot(str(OUT_DIR / "fail.png"))
-        await update.effective_chat.send_message("Timed out loading results; saved fail.png for debugging.")
+        # Send all debugging artifacts to Telegram so you can see what blocked it
+        try:
+            drv.save_screenshot(str(OUT_DIR / "fail.png"))
+            with open(OUT_DIR / "fail.png", "rb") as f:
+                await update.effective_chat.send_photo(f, caption=f"Timeout at URL:\n{drv.current_url}")
+            html = drv.page_source
+            bio = io.BytesIO(html.encode("utf-8", errors="ignore"))
+            bio.name = "fail.html"
+            await update.effective_chat.send_document(InputFile(bio), caption="Page HTML at timeout")
+        except Exception:
+            pass
+        await update.effective_chat.send_message("Timed out loading results; see screenshot/HTML above.")
         raise
 
     ctx.user_data["total"] = len(job_links(drv))
@@ -281,5 +306,4 @@ if __name__ == "__main__":
     app.add_error_handler(on_error)
 
     print("Bot running – /start in chat")
-    # IMPORTANT: do NOT wrap in asyncio.run() and do NOT await this
     app.run_polling(drop_pending_updates=True)
