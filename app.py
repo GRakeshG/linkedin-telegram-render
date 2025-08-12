@@ -25,7 +25,7 @@ SEARCH_QUERY = "Online Reputation Management"
 WAIT_SEC = 25
 MAX_TXT = 4096
 TXT_DOC_THRESHOLD = 15000
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "8429459087:AAFVaSMqitwVbfGoNkhCV-MxtHpZ1-8uG3w"
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BASE_URL = "https://www.linkedin.com/"
 PROFILE_ROOT = Path.home()/"AppData"/"Local"/"Google"/"Chrome"/"LinkedInSeleniumProfile"
 PROFILE_ROOT.parent.mkdir(parents=True, exist_ok=True)
