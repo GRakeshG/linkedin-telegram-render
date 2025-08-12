@@ -208,17 +208,19 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     drv = make_driver(); ctx.user_data.update({"drv": drv, "idx": 0})
     drv.get(BASE_URL)
     login(drv)
-try:
-    if USE_DIRECT_JOBS_URL:
-        go_to_jobs_search(drv, query)
-    else:
-        perform_search(drv, query)
-        open_jobs_tab(drv)
-except TimeoutException:
-    # optional: grab a screenshot to debug consent/CAPTCHA walls
-    drv.save_screenshot(str(OUT_DIR / "fail.png"))
-    await update.effective_chat.send_message("Timed out loading results; saved fail.png for debugging.")
-    raise
+
+    try:
+        if USE_DIRECT_JOBS_URL:
+            go_to_jobs_search(drv, query)
+        else:
+            perform_search(drv, query)
+            open_jobs_tab(drv)
+    except TimeoutException:
+        # optional: grab a screenshot to debug consent/CAPTCHA walls
+        drv.save_screenshot(str(OUT_DIR / "fail.png"))
+        await update.effective_chat.send_message("Timed out loading results; saved fail.png for debugging.")
+        raise
+
     ctx.user_data["total"] = len(job_links(drv))
 
     if ctx.user_data["total"] == 0:
