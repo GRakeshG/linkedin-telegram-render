@@ -1,7 +1,6 @@
-# Dockerfile
 FROM selenium/standalone-chrome:latest
 
-# 👇 allow Selenium Manager to resolve/download a matching chromedriver
+# let Selenium Manager fetch a matching ChromeDriver (not offline)
 ENV SE_OFFLINE=false
 
 USER root
@@ -14,5 +13,5 @@ COPY app.py .
 
 EXPOSE 10000
 
-# run your app (override the image's default ENTRYPOINT)
+# run your app (override the image's default entrypoint)
 ENTRYPOINT ["python3","/app/app.py"]
