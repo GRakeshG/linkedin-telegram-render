@@ -19,6 +19,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+import tempfile, uuid, shutil, atexit
+from selenium.webdriver.chrome.options import Options
 
 # ---------------- CONFIG ----------------
 SEARCH_QUERY = "Online Reputation Management"
@@ -46,16 +48,32 @@ def start_health_server():
 
 # -------------- Selenium ---------------
 def make_driver() -> webdriver.Chrome:
-    opts = webdriver.ChromeOptions()
-    profile = os.environ.get("PROFILE_ROOT", "/profile")
-    Path(profile).mkdir(parents=True, exist_ok=True)
-    opts.add_argument(f"--user-data-dir={profile}")
-    opts.add_argument("--profile-directory=Default")
-    # opts.add_argument("--headless=new")
+    opts = Options()
+    # headless & container-safe flags
+    opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1280,2400")
-    return webdriver.Chrome(options=opts)
+    opts.add_argument("--disable-dev-shm-usage")  # helps in Docker with small /dev/shm
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--window-size=1280,3000")
+
+    # unique profile per run to avoid "user data dir in use"
+    profile_root = f"/tmp/chrome-user-data/{uuid.uuid4()}"
+    os.makedirs(profile_root, exist_ok=True)
+    opts.add_argument(f"--user-data-dir={profile_root}")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--no-default-browser-check")
+
+    drv = webdriver.Chrome(options=opts)
+
+    # clean up the temp profile on exit
+    def _cleanup():
+        try:
+            shutil.rmtree(profile_root, ignore_errors=True)
+        except Exception:
+            pass
+    atexit.register(_cleanup)
+
+    return drv
 
 def wait(drv, cond):
     return WebDriverWait(drv, WAIT_SEC).until(cond)
