@@ -1,7 +1,8 @@
 from __future__ import annotations
-import os, time
+import os, time, threading
 from pathlib import Path
 from typing import List, Optional
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -31,8 +32,19 @@ PROFILE_ROOT.parent.mkdir(parents=True, exist_ok=True)
 OUT_DIR = Path.cwd()/"out"; OUT_DIR.mkdir(exist_ok=True)
 PNG_PATH = OUT_DIR/"job.png"
 
-# -------------- Selenium ---------------
+# -------------- Health Check Server ---------------
+class _Health(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
 
+def start_health_server():
+    port = int(os.environ.get("PORT", "10000"))  # Render's default is 10000
+    srv = HTTPServer(("0.0.0.0", port), _Health)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+# -------------- Selenium ---------------
 def make_driver() -> webdriver.Chrome:
     opts = webdriver.ChromeOptions()
     profile = os.environ.get("PROFILE_ROOT", "/profile")
@@ -45,10 +57,8 @@ def make_driver() -> webdriver.Chrome:
     opts.add_argument("--window-size=1280,2400")
     return webdriver.Chrome(options=opts)
 
-
 def wait(drv, cond):
     return WebDriverWait(drv, WAIT_SEC).until(cond)
-
 
 def logged_in(drv) -> bool:
     try:
@@ -57,32 +67,25 @@ def logged_in(drv) -> bool:
     except Exception:
         return False
 
-
 def login(drv):
     try:
         WebDriverWait(drv, 5).until(EC.presence_of_element_located((By.ID, "global-nav")))
         return
     except Exception:
         pass
-    # If you rely on cookies, just open home. If logged out, LinkedIn will redirect.
     drv.get(BASE_URL)
-
 
 def perform_search(drv):
     box = wait(drv, EC.visibility_of_element_located((By.CSS_SELECTOR, 'input[placeholder="Search"][role="combobox"]')))
     box.clear(); box.send_keys(SEARCH_QUERY); time.sleep(0.3); box.send_keys(Keys.ENTER)
     wait(drv, EC.url_contains("/search/results/"))
 
-
 def open_jobs_tab(drv):
     wait(drv, EC.element_to_be_clickable((By.XPATH, '//button[normalize-space()="Jobs"]'))).click()
     wait(drv, EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'a.job-card-job-posting-card-wrapper__card-link, a.job-card-container__link')))
 
-
-
 def job_links(drv):
     return drv.find_elements(By.CSS_SELECTOR, 'a.job-card-job-posting-card-wrapper__card-link, a.job-card-container__link')
-
 
 def open_job(drv, idx: int) -> Optional[str]:
     ls = job_links(drv)
@@ -95,10 +98,8 @@ def open_job(drv, idx: int) -> Optional[str]:
     time.sleep(1)
     return title
 
-
 def wrapper(drv):
     return drv.find_element(By.CSS_SELECTOR, 'div.jobs-semantic-search-job-details-wrapper')
-
 
 def capture(drv) -> str:
     elem = wrapper(drv)
@@ -193,8 +194,7 @@ async def cb_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.effective_chat.send_message("Chat cleared. Send /start to run again.")
 
-from telegram.ext import Application
-
+# -------------- Main -----------------
 if __name__ == "__main__":
     if TOKEN.startswith("PASTE_"):
         raise SystemExit("Set TELEGRAM_BOT_TOKEN")
@@ -203,10 +203,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(cb_next, pattern="^next$"))
     app.add_handler(CallbackQueryHandler(cb_clear, pattern="^clear$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    port = int(os.environ.get("PORT", "8080"))
+    port = int(os.environ.get("PORT", "10000"))
     url_path = f"webhook/{TOKEN}"                  # secret-ish path
     webhook_url = os.environ.get("WEBHOOK_URL", "")  # set after first deploy
+
+    start_health_server()  # Always start health check server
 
     if webhook_url:
         # Cloud Run / production mode
@@ -217,5 +220,5 @@ if __name__ == "__main__":
             webhook_url=f"{webhook_url}/{url_path}"
         )
     else:
-        # Local testing mode (polling) - avoids HTTPS requirement
+        # Local testing mode (polling)
         app.run_polling()
