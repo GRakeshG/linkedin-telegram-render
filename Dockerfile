@@ -12,6 +12,4 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 COPY app.py .
 
 EXPOSE 10000
-
-# run your app (override base ENTRYPOINT so our script starts)
 ENTRYPOINT ["python3","/app/app.py"]
