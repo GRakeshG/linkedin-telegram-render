@@ -20,13 +20,13 @@ from selenium.common.exceptions import TimeoutException
 # ---------------- CONFIG ----------------
 WAIT_SEC = 45
 MAX_TXT = 4096
-TXT_DOC_THRESHOLD = 15000
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or "PASTE_TOKEN_IN_ENV"
 BASE_URL = "https://www.linkedin.com/"
 OUT_DIR = Path.cwd() / "out"; OUT_DIR.mkdir(exist_ok=True)
 PNG_PATH = OUT_DIR / "job.png"
 
-# Toggle: 0 = your original “type-then-click-Jobs”, 1 = go directly to Jobs URL
+# Toggle: 0 = type in top search + click Jobs (original path)
+#         1 = open the same Jobs results page by URL (more robust in headless)
 USE_DIRECT_JOBS_URL = os.getenv("DIRECT_JOBS_URL", "0") == "1"
 
 # -------------- tiny health server (Render health checks) ---------------
@@ -56,7 +56,7 @@ def make_driver() -> webdriver.Chrome:
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1280,3000")
 
-    # unique user-data-dir each run to avoid "already in use"
+    # unique profile dir to avoid "user data dir in use"
     profile_root = f"/tmp/chrome-user-data/{uuid.uuid4()}"
     os.makedirs(profile_root, exist_ok=True)
     opts.add_argument(f"--user-data-dir={profile_root}")
@@ -78,7 +78,8 @@ def wait(drv, cond):
 def inject_cookies_if_any(drv) -> bool:
     """
     Reads LINKEDIN_COOKIES_JSON env var (JSON array of cookies).
-    Each cookie: { "name": "...", "value": "...", "domain": ".linkedin.com", "path": "/", "secure": true, "httpOnly": true }
+    Each cookie sample:
+    { "name": "li_at", "value": "...", "domain": ".linkedin.com", "path": "/", "secure": true, "httpOnly": true }
     """
     raw = os.getenv("LINKEDIN_COOKIES_JSON", "").strip()
     if not raw:
@@ -114,9 +115,9 @@ def login(drv):
         print("⚠️ Not logged in; results may be limited.")
 
 def perform_search(drv, query: str):
-    # primary selector
+    # primary selector for top search
     sel1 = (By.CSS_SELECTOR, 'input[placeholder="Search"][role="combobox"]')
-    # fallback sometimes used
+    # fallback sometimes used in alternate layouts
     sel2 = (By.CSS_SELECTOR, 'input[aria-label="Search"]')
     try:
         box = wait(drv, EC.visibility_of_element_located(sel1))
@@ -187,7 +188,7 @@ async def send_job(ctx: ContextTypes.DEFAULT_TYPE, title: str):
 
     buttons = [InlineKeyboardButton("Next ▶️", callback_data="next")] if idx+1 < total else []
     buttons.append(InlineKeyboardButton("Clear", callback_data="clear"))
-    lnk = await chat.send_message(ctx.user_data.get("current_url", ""), reply_markup=InlineKeyboardMarkup([buttons]))
+    lnk = await chat.send_message(drv.current_url, reply_markup=InlineKeyboardMarkup([buttons]))
     ids.append(lnk.message_id)
 
     ctx.user_data.setdefault("msg_ids", []).extend(ids)
@@ -221,12 +222,10 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         if USE_DIRECT_JOBS_URL:
             go_to_jobs_search(drv, query)
-            ctx.user_data["current_url"] = drv.current_url
         else:
             drv.get(BASE_URL)
             perform_search(drv, query)
             open_jobs_tab(drv)
-            ctx.user_data["current_url"] = drv.current_url
     except TimeoutException:
         drv.save_screenshot(str(OUT_DIR / "fail.png"))
         await update.effective_chat.send_message("Timed out loading results; saved fail.png for debugging.")
@@ -257,23 +256,21 @@ async def cb_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.effective_chat.send_message("Chat cleared. Send /start to run again.")
 
-# Optional: simple error log so PTB doesn't print "No error handlers..."
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         print(f"Exception: {ctx.error}")
     except Exception:
         pass
 
-# -------------- Main ---------------------
-if __name__ == "__main__":
-    start_health_server()
+# -------------- Main (async) ---------------------
+async def main():
     if not TOKEN or TOKEN.startswith("PASTE_"):
         raise SystemExit("Set TELEGRAM_BOT_TOKEN")
 
     app = Application.builder().token(TOKEN).build()
 
-    # Ensure polling mode (no webhook) every boot and start clean
-    asyncio.run(app.bot.delete_webhook(drop_pending_updates=True))
+    # Ensure polling mode (no webhook) and start clean
+    await app.bot.delete_webhook(drop_pending_updates=True)
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(cb_next, pattern="^next$"))
@@ -282,4 +279,8 @@ if __name__ == "__main__":
     app.add_error_handler(on_error)
 
     print("Bot running – /start in chat")
-    app.run_polling(drop_pending_updates=True)
+    await app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    start_health_server()
+    asyncio.run(main())
