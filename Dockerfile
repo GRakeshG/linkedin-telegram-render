@@ -1,17 +1,18 @@
-FROM python:3.11-slim
+# Use Chrome + Chromedriver preinstalled
+FROM selenium/standalone-chrome:latest
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends chromium chromium-driver fonts-liberation && \
-    rm -rf /var/lib/apt/lists/*
+# Install Python
+USER root
+RUN apt-get update && apt-get install -y python3 python3-pip && rm -rf /var/lib/apt/lists/*
 
+# Copy code and deps
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
+COPY app.py .
 
-COPY . /app
+# Helpful (not required) to document the port Render expects
+EXPOSE 10000
 
-RUN mkdir -p /profile
-ENV PROFILE_ROOT=/profile
-ENV PORT=8080
-
-CMD ["python", "app.py"]
+# CRUCIAL: override the image's default ENTRYPOINT so our app runs
+ENTRYPOINT ["python3","/app/app.py"]
