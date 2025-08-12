@@ -216,12 +216,14 @@ async def clear_msgs(ctx: ContextTypes.DEFAULT_TYPE):
 
 # -------------- Handlers -----------------
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    print(f"Got /start from {update.effective_user.id}")
     ctx.user_data.clear()
     ctx.chat_data["chat"] = update.effective_chat
     ctx.user_data["awaiting_query"] = True
     await update.effective_chat.send_message("Send your LinkedIn search query (e.g., 'Online Reputation Management').")
 
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    print(f"Got text: {update.effective_message.text!r} from {update.effective_user.id}")
     if not ctx.user_data.get("awaiting_query"): return
     query = (update.message.text or "").strip()
     if not query:
@@ -230,6 +232,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     ctx.user_data["awaiting_query"] = False
     drv = make_driver(); ctx.user_data.update({"drv": drv, "idx": 0})
+    await update.effective_chat.send_message("Got it — searching on LinkedIn now…")
 
     login(drv)
 
