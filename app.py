@@ -1,8 +1,14 @@
 from __future__ import annotations
 import os, time, threading
+import os, urllib.parse
+USE_DIRECT_JOBS_URL = os.getenv("DIRECT_JOBS_URL", "0") == "1"
 from pathlib import Path
 from typing import List, Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -24,7 +30,7 @@ from selenium.webdriver.chrome.options import Options
 
 # ---------------- CONFIG ----------------
 SEARCH_QUERY = "Online Reputation Management"
-WAIT_SEC = 25
+WAIT_SEC = 55
 MAX_TXT = 4096
 TXT_DOC_THRESHOLD = 15000
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -80,23 +86,42 @@ def wait(drv, cond):
 
 def logged_in(drv) -> bool:
     try:
+        # top nav is a good “I’m logged in” signal
         wait(drv, EC.presence_of_element_located((By.ID, "global-nav")))
         return True
-    except Exception:
+    except TimeoutException:
         return False
 
 def login(drv):
-    try:
-        WebDriverWait(drv, 5).until(EC.presence_of_element_located((By.ID, "global-nav")))
-        return
-    except Exception:
-        pass
-    drv.get(BASE_URL)
+    # your cookie injection stays the same – Selenium supports add_cookie
+    inject_cookies_if_any(drv)  # visit domain first inside this function
+    drv.get("https://www.linkedin.com/feed/")
+    if not logged_in(drv):
+        print("⚠️ Not logged in; results may be limited.")
+        
+def perform_search(drv, query: str):
+    # primary selector
+    sel1 = (By.CSS_SELECTOR, 'input[placeholder="Search"][role="combobox"]')
+    # fallback sometimes appears on different layouts
+    sel2 = (By.CSS_SELECTOR, 'input[aria-label="Search"]')
 
-def perform_search(drv):
-    box = wait(drv, EC.visibility_of_element_located((By.CSS_SELECTOR, 'input[placeholder="Search"][role="combobox"]')))
-    box.clear(); box.send_keys(SEARCH_QUERY); time.sleep(0.3); box.send_keys(Keys.ENTER)
+    try:
+        box = wait(drv, EC.visibility_of_element_located(sel1))
+    except TimeoutException:
+        box = wait(drv, EC.visibility_of_element_located(sel2))
+
+    box.clear()
+    box.send_keys(query)
+    box.send_keys(Keys.ENTER)
     wait(drv, EC.url_contains("/search/results/"))
+
+def go_to_jobs_search(drv, query: str):
+    url = "https://www.linkedin.com/jobs/search/?keywords=" + urllib.parse.quote_plus(query)
+    drv.get(url)
+    wait(drv, EC.presence_of_all_elements_located((
+        By.CSS_SELECTOR,
+        'a.job-card-job-posting-card-wrapper__card-link, a.job-card-container__link'
+    )))
 
 def open_jobs_tab(drv):
     wait(drv, EC.element_to_be_clickable((By.XPATH, '//button[normalize-space()="Jobs"]'))).click()
@@ -183,8 +208,17 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     drv = make_driver(); ctx.user_data.update({"drv": drv, "idx": 0})
     drv.get(BASE_URL)
     login(drv)
-    perform_search(drv)
-    open_jobs_tab(drv)
+try:
+    if USE_DIRECT_JOBS_URL:
+        go_to_jobs_search(drv, query)
+    else:
+        perform_search(drv, query)
+        open_jobs_tab(drv)
+except TimeoutException:
+    # optional: grab a screenshot to debug consent/CAPTCHA walls
+    drv.save_screenshot(str(OUT_DIR / "fail.png"))
+    await update.effective_chat.send_message("Timed out loading results; saved fail.png for debugging.")
+    raise
     ctx.user_data["total"] = len(job_links(drv))
 
     if ctx.user_data["total"] == 0:
