@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, time, json, threading, asyncio, urllib.parse, uuid, shutil, atexit
+import os, time, json, threading, urllib.parse, uuid, shutil, atexit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import List, Optional
@@ -25,9 +25,8 @@ BASE_URL = "https://www.linkedin.com/"
 OUT_DIR = Path.cwd() / "out"; OUT_DIR.mkdir(exist_ok=True)
 PNG_PATH = OUT_DIR / "job.png"
 
-# Toggle: 0 = type in top search + click Jobs (original path)
-#         1 = open the same Jobs results page by URL (more robust in headless)
-USE_DIRECT_JOBS_URL = os.getenv("DIRECT_JOBS_URL", "0") == "1"
+# 0 = original (type in top search + click Jobs), 1 = open the SAME Jobs page by URL
+USE_DIRECT_JOBS_URL = os.getenv("DIRECT_JOBS_URL", "1") == "1"
 
 # -------------- tiny health server (Render health checks) ---------------
 class _Health(BaseHTTPRequestHandler):
@@ -78,15 +77,15 @@ def wait(drv, cond):
 def inject_cookies_if_any(drv) -> bool:
     """
     Reads LINKEDIN_COOKIES_JSON env var (JSON array of cookies).
-    Each cookie sample:
-    { "name": "li_at", "value": "...", "domain": ".linkedin.com", "path": "/", "secure": true, "httpOnly": true }
+    Example item:
+    {"name":"li_at","value":"...","domain":".linkedin.com","path":"/","secure":true,"httpOnly":true}
     """
     raw = os.getenv("LINKEDIN_COOKIES_JSON", "").strip()
     if not raw:
         return False
     try:
         cookies = json.loads(raw)
-        # Must visit domain first so Selenium allows add_cookie
+        # must visit domain first
         drv.get("https://www.linkedin.com")
         for c in cookies:
             drv.add_cookie({
@@ -115,10 +114,9 @@ def login(drv):
         print("⚠️ Not logged in; results may be limited.")
 
 def perform_search(drv, query: str):
-    # primary selector for top search
+    # original method: type into top search, press Enter
     sel1 = (By.CSS_SELECTOR, 'input[placeholder="Search"][role="combobox"]')
-    # fallback sometimes used in alternate layouts
-    sel2 = (By.CSS_SELECTOR, 'input[aria-label="Search"]')
+    sel2 = (By.CSS_SELECTOR, 'input[aria-label="Search"]')  # fallback
     try:
         box = wait(drv, EC.visibility_of_element_located(sel1))
     except TimeoutException:
@@ -138,6 +136,7 @@ def open_jobs_tab(drv):
     )))
 
 def go_to_jobs_search(drv, query: str):
+    # same end page as the original flow, just more robust for headless
     url = "https://www.linkedin.com/jobs/search/?keywords=" + urllib.parse.quote_plus(query)
     drv.get(url)
     wait(drv, EC.presence_of_all_elements_located((
@@ -262,15 +261,18 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pass
 
-# -------------- Main (async) ---------------------
-async def main():
+# Ensure polling mode (no webhook) on boot (runs inside PTB's loop)
+async def post_init(app: Application):
+    await app.bot.delete_webhook(drop_pending_updates=True)
+
+# -------------- Main (PTB owns the event loop) ---------------------
+if __name__ == "__main__":
+    start_health_server()
+
     if not TOKEN or TOKEN.startswith("PASTE_"):
         raise SystemExit("Set TELEGRAM_BOT_TOKEN")
 
-    app = Application.builder().token(TOKEN).build()
-
-    # Ensure polling mode (no webhook) and start clean
-    await app.bot.delete_webhook(drop_pending_updates=True)
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(cb_next, pattern="^next$"))
@@ -279,8 +281,5 @@ async def main():
     app.add_error_handler(on_error)
 
     print("Bot running – /start in chat")
-    await app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    start_health_server()
-    asyncio.run(main())
+    # IMPORTANT: do NOT wrap in asyncio.run() and do NOT await this
+    app.run_polling(drop_pending_updates=True)
