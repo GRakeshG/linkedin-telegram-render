@@ -1,6 +1,6 @@
 FROM selenium/standalone-chrome:latest
 
-# allow Selenium Manager to resolve a matching chromedriver
+# allow Selenium Manager to fetch a matching chromedriver
 ENV SE_OFFLINE=false
 
 USER root
